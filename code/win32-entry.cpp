@@ -1,10 +1,10 @@
 #include <stdint.h>
 #include <windows.h>
 #include <winnt.h>
+#include <xinput.h>
 
 #define internal static
 #define global_variable static
-
 
 struct Bitmap {
   BITMAPINFO info;
@@ -24,7 +24,53 @@ global_variable bool g_running = false;
 global_variable uint32_t g_offsetX = 0;
 global_variable uint32_t g_offsetY = 0;
 
-global_variable uint32_t test_variable = 32;
+// #define X_INPUT_GET_STATE(name)                                                \
+//   DWORD WINAPI name(DWORD dwUserIndex, XINPUT_STATE *pState)
+// typedef X_INPUT_GET_STATE(x_input_get_state);
+// X_INPUT_GET_STATE(XInputGetStateStub) { return 0; }
+// global_variable x_input_get_state *XInputGetState_ = XInputGetStateStub;
+// #define XInputGetState XInputGetState_
+
+// #define X_INPUT_SET_STATE(name)                                                \
+//   DWORD WINAPI name(DWORD dwUserIndex, XINPUT_VIBRATION *pVibration)
+// typedef X_INPUT_SET_STATE(x_input_set_state);
+// X_INPUT_SET_STATE(XInputSetStateStub) { return 0; }
+// global_variable x_input_set_state *XInputSetState_ = XInputSetStateStub;
+// #define XInputSetState XInputSetState_
+
+typedef DWORD WINAPI x_input_get_state(DWORD dwUserIndex, XINPUT_STATE *pState);
+typedef DWORD WINAPI x_input_set_state(DWORD dwUserIndex,
+                                       XINPUT_VIBRATION *pVibration);
+
+global_variable x_input_get_state *XInputGetState_;
+global_variable x_input_set_state *XInputSetState_;
+
+internal void Win32LoadXInput() {
+  HMODULE hModule = LoadLibrary("xinput1_3.dll");
+  if (hModule) {
+    XInputGetState_ =
+        (x_input_get_state *)GetProcAddress(hModule, "XInputGetState");
+    XInputSetState_ =
+        (x_input_set_state *)GetProcAddress(hModule, "XInputSetState");
+  }
+}
+
+DWORD WINAPI XInputGetState(DWORD dwUserIndex,
+                            XINPUT_STATE *pState) WIN_NOEXCEPT {
+  if (XInputGetState_) {
+    return XInputGetState_(dwUserIndex, pState);
+  }
+
+  return 0;
+}
+
+DWORD WINAPI XInputSetState(DWORD dwUserIndex,
+                            XINPUT_VIBRATION *pVibration) WIN_NOEXCEPT {
+  if (XInputSetState_) {
+    return XInputSetState_(dwUserIndex, pVibration);
+  }
+  return 0;
+}
 
 internal Dimensions Win32GetClientDimensions(HWND hWindow) {
   RECT clientRect;
@@ -84,7 +130,7 @@ internal void Win32ResizeDIBSection(int width, int height) {
 
 internal void Win32UpdateWindow(HDC hdc, RECT *clientRect, int x = 0, int y = 0,
                                 int width = 0, int height = 0) {
-  RenderCoolGradient(++g_offsetX, g_offsetY);
+  RenderCoolGradient(g_offsetX, g_offsetY);
   int clientWidth = clientRect->right - clientRect->left;
   int clientHeight = clientRect->bottom - clientRect->top;
   StretchDIBits(hdc, 0, 0, clientWidth, clientHeight, 0, 0, g_bitmap.width,
@@ -107,6 +153,40 @@ LRESULT CALLBACK Win32MainWindowCallback(HWND hWindow, UINT message,
   case WM_DESTROY: {
     g_running = false;
     OutputDebugString("WM_DESTROY\n");
+    break;
+  }
+  case WM_KEYDOWN:
+  case WM_KEYUP:
+  case WM_SYSKEYDOWN:
+  case WM_SYSKEYUP: {
+    uint64_t VKCode = wParam;
+    // 11(repeated up), 10(released -never getting this because of the api-),
+    // 01(repated down), 00(pressed)
+    bool isUp = ((lParam & (1 << 31)) != 0);
+    bool wasUp((lParam & (1 << 30)) != 0);
+    if ((isUp == false && wasUp == false) || (isUp == false && wasUp == true)) {
+      if (VKCode == 'A') {
+        g_offsetX += 10;
+      }
+      if (VKCode == 'S') {
+        g_offsetY -= 10;
+      }
+      if (VKCode == 'D') {
+        g_offsetX -= 10;
+      }
+      if (VKCode == 'Q') {
+      }
+      if (VKCode == 'W') {
+        g_offsetY += 10;
+      }
+      if (VKCode == 'E') {
+      }
+      if (VKCode == VK_ESCAPE) {
+      }
+      if (VKCode == VK_SPACE) {
+      }
+    }
+
     break;
   }
   case WM_CLOSE: {
@@ -150,6 +230,8 @@ LRESULT CALLBACK Win32MainWindowCallback(HWND hWindow, UINT message,
 
 int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE hinstprev, PWSTR cmdline,
                       int cmdshow) {
+  Win32LoadXInput();
+
   WNDCLASS windowClass = {};
   windowClass.style = CS_OWNDC | CS_VREDRAW | CS_HREDRAW;
   windowClass.lpfnWndProc = Win32MainWindowCallback;
@@ -191,15 +273,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE hinstprev, PWSTR cmdline,
   Win32ResizeDIBSection(clientWindowDimensions.width,
                         clientWindowDimensions.height);
 
-  // typedef struct tagMSG {
-  //   HWND   hwnd;
-  //   UINT   message;
-  //   WPARAM wParam;
-  //   LPARAM lParam;
-  //   DWORD  time;
-  //   POINT  pt;
-  //   DWORD  lPrivate;
-  // } MSG, *PMSG, *NPMSG, *LPMSG;
+  // Game loop
   MSG msg = {};
   g_running = true;
   while (g_running) {
@@ -207,13 +281,73 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE hinstprev, PWSTR cmdline,
       TranslateMessage(&msg);
       DispatchMessage(&msg);
     }
-    // TestFunciton(hello, asfasf)
-    HDC dc = GetDC(windowHandle); // 
+
+    // Input loop
+    DWORD dwResult;
+    for (DWORD i = 0; i < XUSER_MAX_COUNT; i++) {
+      XINPUT_STATE state;
+      ZeroMemory(&state, sizeof(XINPUT_STATE));
+
+      // Simply get the state of the controller from XInput.
+      dwResult = XInputGetState(i, &state);
+
+      // WoooW !!!
+      // XINPUT_VIBRATION vibration;
+      // vibration.wLeftMotorSpeed = 0xFFFF;
+      // vibration.wRightMotorSpeed = 0xFFF;
+      // XInputSetState(i, &vibration);
+
+      if (dwResult == ERROR_SUCCESS) {
+        // Controller is connected
+        DWORD stateIndex = state.dwPacketNumber;
+        XINPUT_GAMEPAD *gamepad = &state.Gamepad;
+
+        WORD isUpPressed = (gamepad->wButtons & XINPUT_GAMEPAD_DPAD_UP);
+        WORD isDownPressed = (gamepad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN);
+        WORD isLeftPressed = (gamepad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT);
+        WORD isRightPressed = (gamepad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT);
+        WORD isStartPressed = (gamepad->wButtons & XINPUT_GAMEPAD_START);
+        WORD isBackPressed = (gamepad->wButtons & XINPUT_GAMEPAD_BACK);
+        WORD isLeftShoulderPressed =
+            (gamepad->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER);
+        WORD isrightShoulderPressed =
+            (gamepad->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER);
+        WORD isAPressed = (gamepad->wButtons & XINPUT_GAMEPAD_A);
+        WORD isBPressed = (gamepad->wButtons & XINPUT_GAMEPAD_B);
+        WORD isXPressed = (gamepad->wButtons & XINPUT_GAMEPAD_X);
+        WORD isYPressed = (gamepad->wButtons & XINPUT_GAMEPAD_Y);
+
+        BYTE leftTriggerValue = gamepad->bLeftTrigger;
+        BYTE rightTriggerValue = gamepad->bRightTrigger;
+
+        SHORT thumbLeftPosX = gamepad->sThumbLX;
+        SHORT thumbLeftPosY = gamepad->sThumbLY;
+        SHORT thumbRighttPosX = gamepad->sThumbRX;
+        SHORT thumbRightPosY = gamepad->sThumbRY;
+
+        if (thumbLeftPosX > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) {
+          g_offsetX++;
+        } else if (thumbLeftPosX < -XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) {
+          g_offsetX--;
+        }
+
+        if (thumbLeftPosY > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) {
+          g_offsetY--;
+        } else if (thumbLeftPosY < -XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) {
+          g_offsetY++;
+        }
+
+      } else {
+        // Controller is not connected
+      }
+    }
+
+    HDC dc = GetDC(windowHandle);
     RECT clientRect;
     GetClientRect(windowHandle, &clientRect);
     Win32UpdateWindow(dc, &clientRect);
     ReleaseDC(windowHandle, dc);
-}
+  }
 
-   return 0;
+  return 0;
 }
