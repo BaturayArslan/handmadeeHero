@@ -1,6 +1,8 @@
 #include <stdint.h>
+#include <stdio.h>
 #include <windows.h>
 #include <winnt.h>
+#include <xaudio2.h>
 #include <xinput.h>
 
 #define internal static
@@ -61,7 +63,7 @@ DWORD WINAPI XInputGetState(DWORD dwUserIndex,
     return XInputGetState_(dwUserIndex, pState);
   }
 
-  return 0;
+  return ERROR_DEVICE_NOT_CONNECTED;
 }
 
 DWORD WINAPI XInputSetState(DWORD dwUserIndex,
@@ -70,6 +72,92 @@ DWORD WINAPI XInputSetState(DWORD dwUserIndex,
     return XInputSetState_(dwUserIndex, pVibration);
   }
   return 0;
+}
+
+internal void PrintDebugString(const char *message, int errorCode) {
+  char buffer[256];
+  sprintf(buffer, " with error code: %d\n", errorCode);
+  OutputDebugString(message);
+  OutputDebugString(buffer);
+}
+
+typedef HRESULT x_audio2_create(IXAudio2 **ppXAudio2, UINT32 Flags,
+                                XAUDIO2_PROCESSOR XAudio2Processor);
+global_variable x_audio2_create *XAudio2Create_;
+internal void Win32LoadXAudio2(void) {
+  HMODULE hModule = LoadLibrary("xaudio2_9redist.dll");
+  XAudio2Create_ = (x_audio2_create *)GetProcAddress(hModule, "XAudio2Create");
+}
+#define XAudio2Create XAudio2Create_
+
+global_variable const uint32_t g_AUDIO_SAMPLE_RATE = 48000;
+global_variable const uint32_t g_AUDIO_CHANNEL = 2;
+global_variable const uint32_t g_AUDIO_BIT_PER_SAMPLE = 16;
+global_variable const uint32_t g_AUDIO_LENGTH = 2; // in seconds.
+global_variable const uint32_t g_AUDIO_DATA_SIZEBY =
+    g_AUDIO_SAMPLE_RATE * g_AUDIO_CHANNEL * g_AUDIO_BIT_PER_SAMPLE *
+    g_AUDIO_LENGTH / 8;
+global_variable BYTE pAudioData[g_AUDIO_DATA_SIZEBY] = {};
+
+internal void Win32InitXAudio2(void) {
+  Win32LoadXAudio2();
+  // TODO(baturay):: if COINIT_MULTITHREADED or  COINIT_APARTMENTTHREADED make
+  // more sense for my situation.
+  HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  if (SUCCEEDED(hr)) {
+    IXAudio2 *xaudio2;
+    if (S_OK == XAudio2Create(&xaudio2, 0, XAUDIO2_DEFAULT_PROCESSOR)) {
+      // IXAUDIO2 CREATED SUCCESFULLY
+      IXAudio2MasteringVoice *p_masterVoice;
+      hr = xaudio2->CreateMasteringVoice(&p_masterVoice, g_AUDIO_CHANNEL,
+                                         g_AUDIO_SAMPLE_RATE);
+      if (S_OK == hr) {
+        // masterVoice created.
+        XAUDIO2_BUFFER xBuffer = {};
+        xBuffer.Flags = 0;
+        xBuffer.AudioBytes = g_AUDIO_DATA_SIZEBY;
+        xBuffer.pAudioData = pAudioData;
+        xBuffer.PlayBegin = 0;
+        xBuffer.PlayLength = 0;
+        xBuffer.LoopBegin = 0;
+        xBuffer.LoopLength = 0;
+        xBuffer.LoopCount = XAUDIO2_LOOP_INFINITE;
+
+        WAVEFORMATEX waveFormat = {};
+        waveFormat.wFormatTag = WAVE_FORMAT_PCM;
+        waveFormat.nChannels = g_AUDIO_CHANNEL;
+        waveFormat.nSamplesPerSec = g_AUDIO_SAMPLE_RATE;
+        waveFormat.nAvgBytesPerSec = g_AUDIO_DATA_SIZEBY / g_AUDIO_LENGTH;
+        // TODO(baturay):: I don't know the logic behind this ? I'm doing like
+        // this because  documentation say so.
+        waveFormat.nBlockAlign = (g_AUDIO_CHANNEL * g_AUDIO_BIT_PER_SAMPLE) / 8;
+        waveFormat.wBitsPerSample = g_AUDIO_BIT_PER_SAMPLE;
+        waveFormat.cbSize = 0;
+
+        IXAudio2SourceVoice *p_sourceVoice;
+        hr = xaudio2->CreateSourceVoice(&p_sourceVoice,
+                                        (WAVEFORMATEX *)&waveFormat);
+        if (S_OK == hr) {
+          // SOURCE VOICE CREATED.
+          p_sourceVoice->SubmitSourceBuffer(&xBuffer);
+          PrintDebugString("Everything created successfully", 0);
+        } else {
+          PrintDebugString("source voice creation failed", hr);
+        }
+
+      } else {
+        // Logger (Master voice creation failed)
+        PrintDebugString("Master voice creation failed", hr);
+      }
+    } else {
+      // Logger (xudio creation failed)
+      PrintDebugString("XAudio2 creation failed", hr);
+    }
+
+  } else {
+    // Logger (COM init failed.)
+    PrintDebugString("Com init failed", hr);
+  }
 }
 
 internal Dimensions Win32GetClientDimensions(HWND hWindow) {
@@ -230,6 +318,7 @@ LRESULT CALLBACK Win32MainWindowCallback(HWND hWindow, UINT message,
 
 int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE hinstprev, PWSTR cmdline,
                       int cmdshow) {
+  Win32InitXAudio2();
   Win32LoadXInput();
 
   WNDCLASS windowClass = {};
