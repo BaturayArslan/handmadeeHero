@@ -97,7 +97,7 @@ global_variable const uint32_t g_AUDIO_LENGTH = 2; // in seconds.
 global_variable const uint32_t g_AUDIO_DATA_SIZEBY =
     g_AUDIO_SAMPLE_RATE * g_AUDIO_CHANNEL * g_AUDIO_BIT_PER_SAMPLE *
     g_AUDIO_LENGTH / 8;
-global_variable BYTE pAudioData[g_AUDIO_DATA_SIZEBY] = {};
+global_variable BYTE pAudioData[g_AUDIO_DATA_SIZEBY] = {0xF7};
 
 internal void Win32InitXAudio2(void) {
   Win32LoadXAudio2();
@@ -139,7 +139,16 @@ internal void Win32InitXAudio2(void) {
                                         (WAVEFORMATEX *)&waveFormat);
         if (S_OK == hr) {
           // SOURCE VOICE CREATED.
+          int16_t *samples = (int16_t *)pAudioData;
+          uint32_t frames = g_AUDIO_SAMPLE_RATE * g_AUDIO_LENGTH;
+          for (uint32_t i = 0; i < frames; ++i) {
+            int16_t v = ((i / 48) % 2) ? 8000 : -8000; // ~500 Hz
+            samples[2 * i + 0] = v;
+            samples[2 * i + 1] = v;
+          }
+          
           p_sourceVoice->SubmitSourceBuffer(&xBuffer);
+          p_sourceVoice->Start(0);
           PrintDebugString("Everything created successfully", 0);
         } else {
           PrintDebugString("source voice creation failed", hr);
@@ -231,16 +240,16 @@ LRESULT CALLBACK Win32MainWindowCallback(HWND hWindow, UINT message,
   LRESULT result = 0;
   switch (message) {
   case WM_SIZE: {
-    OutputDebugString("WM_RESIZE\n");
+    // OutputDebugString("WM_RESIZE\n");
     break;
   }
   case WM_CREATE: {
-    OutputDebugString("WM_CREATE\n");
+    // OutputDebugString("WM_CREATE\n");
     break;
   }
   case WM_DESTROY: {
     g_running = false;
-    OutputDebugString("WM_DESTROY\n");
+    // OutputDebugString("WM_DESTROY\n");
     break;
   }
   case WM_KEYDOWN:
@@ -278,7 +287,7 @@ LRESULT CALLBACK Win32MainWindowCallback(HWND hWindow, UINT message,
     break;
   }
   case WM_CLOSE: {
-    OutputDebugString("WM_CLOSE\n");
+    // OutputDebugString("WM_CLOSE\n");
     DestroyWindow(hWindow);
     break;
   }
@@ -289,7 +298,7 @@ LRESULT CALLBACK Win32MainWindowCallback(HWND hWindow, UINT message,
     } else {
       ShowWindow(hWindow, SW_MINIMIZE);
     }
-    OutputDebugString("WM_ACTIVATEAPP\n");
+    // OutputDebugString("WM_ACTIVATEAPP\n");
     break;
   }
   case WM_PAINT: {
